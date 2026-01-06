@@ -15,7 +15,7 @@ void CoroFree(Coro* coro);
 
 This project is done for explorational, recreational and research purposes.
 
-Usually, people just use `ucontext` or similar. This library uses it's own context switch login for as little unavoidable assembly as possible.
+Usually, people just use `ucontext` or similar. This library uses it's own context switch logic for as little unavoidable assembly as possible.
 Main switch is done with just 6 instructions:
 ```asm
     ...
@@ -34,6 +34,6 @@ ContextSwitch:
 
 You may ask: "But what happens with all the registers after this switch?"
 
-Good question! All other registers are listed as clobbers of ContextSwitch invokation. Compiler manages them and in real function, where switch is happening, only a couple actually needs to be saved across switches.
+Good question! All other registers are listed as clobbers of ContextSwitch invocation. Compiler manages them and in real function, where switch is happening, only a couple actually needs to be saved across switches.
 
-And that's it, you know everything you need to know about this lib.
+And that's it, you know everything you need to know about this library!

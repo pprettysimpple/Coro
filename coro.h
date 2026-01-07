@@ -99,12 +99,21 @@ void CoroFree(Coro* coro);
 #include <assert.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <stdint.h>
 
 #include <sys/mman.h>
 
 // Zero-initialized coroutine can be used as the initial coroutine
 thread_local Coro init_coro = {0};
 thread_local Coro* current_coro = NULL;
+
+// Trampoline for coro startup/teardown
+static void CoroStartWrapper() {
+    current_coro->entry(current_coro->args);
+    current_coro->state = CORO_DONE;
+    CoroSuspend();
+    __builtin_unreachable();
+}
 
 // All right, in order to switch context, you need to implement this two bad boys:
 // 1) SetupCtx : Must setup coroutine for the first "SwitchCtx" of "Resume" function to 
@@ -113,7 +122,67 @@ thread_local Coro* current_coro = NULL;
 // This functions do "ALMOST" the same thing as libc's makecontext/swapcontext, but
 // they do not save signal mask, don't do syscalls and in general give less guarantees, but work faster
 #if defined(__x86_64__) && defined(__linux__)
-#include "coro_switch_sysv.inl"
+
+    static void SetupCtx(Coro* coro) {
+        size_t* sp = (size_t*)(coro->stack_begin + coro->stack_size);
+        sp = (size_t*)((uintptr_t)(sp) & ~0xF);   // align stack to 16 bytes
+        assert(sp - 3 >= (size_t*)coro->stack_begin && "Stack is to small for initial frame");
+        sp -= 1; *sp = 0xDEADBEEFDEADBEEF;        // for debugger viewing
+        sp -= 1; *sp = (size_t)&CoroStartWrapper; // ret addr
+        sp -= 1; *sp = 0xDEADBEEFDEADBEEF;        // rbp
+
+        coro->ctx = (Ctx){(size_t)sp};
+    }
+
+    // This implementation clobbers every register available, so we need to manually specify every register there is
+    #define SWITCH_XMM8_VEC_REGS\
+        "xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "xmm5", "xmm6", "xmm7"
+
+    #define SWITCH_YMM16_VEC_REGS\
+        "ymm0", "ymm1", "ymm2", "ymm3", "ymm4", "ymm5", "ymm6", "ymm7", "ymm8", "ymm9", "ymm10", "ymm11", "ymm12", "ymm13", "ymm14", "ymm15"
+
+    #define SWITCH_ZMM32_VEC_REGS\
+        "zmm0", "zmm1", "zmm2", "zmm3", "zmm4", "zmm5", "zmm6", "zmm7", "zmm8", "zmm9",\
+        "zmm10", "zmm11", "zmm12", "zmm13", "zmm14", "zmm15", "zmm16", "zmm17", "zmm18", "zmm19",\
+        "zmm20", "zmm21", "zmm22", "zmm23", "zmm24", "zmm25", "zmm26", "zmm27", "zmm28", "zmm29",\
+        "zmm30", "zmm31"
+
+    #if defined(__AVX512F__)
+    #define SWITCH_CURRENT_VEC_REGS SWITCH_ZMM32_VEC_REGS
+    #elif defined(__AVX__)
+    #define SWITCH_CURRENT_VEC_REGS SWITCH_YMM16_VEC_REGS
+    #else
+    #define SWITCH_CURRENT_VEC_REGS SWITCH_XMM8_VEC_REGS
+    #endif
+
+    // Switch from one stack to another
+    // This inline asm tells compiler that this call shits basically everything in the environment
+    // And it's compiler job to figure out what to do with this information
+    // So compiler becomes THE builder of context we gonna switch back to
+    // We basically need to specify ALL registers here, not just caller or callee saved. All of them
+    // Other solutions for context switch save everything that is callee-saved and live with it,
+    //  but here I'm trying another approach
+    // TODO: redzone clobber
+    #define CoroSwitchCtx(from, to) \
+        Ctx* from_var##__LINE__ = (from); \
+        Ctx* to_var##__LINE__ = (to); \
+        asm volatile ( \
+            "lea .switch_label_%=(%%rip), %%rax\n\t" \
+            "push %%rax\n\t" \
+            "push %%rbp\n\t" \
+            "mov %%rsp, (%%rdi)\n\t" \
+            "mov (%%rsi), %%rsp\n\t" \
+            "pop %%rbp\n\t" \
+            "ret\n\t" \
+            ".switch_label_%=:" \
+            : "+D"((from_var##__LINE__)), "+S"((to_var##__LINE__)) \
+            : \
+            : "memory" \
+            , "rax", "rbx", "rcx", "rdx" \
+            , "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15" \
+            , SWITCH_CURRENT_VEC_REGS \
+        )
+
 #elif defined(__i386__) && defined(__linux__)
     #error "TODO: 32bit linux support"
 #else
@@ -123,13 +192,6 @@ thread_local Coro* current_coro = NULL;
 //
 // Here goes coroutine management logic
 //
-
-static void CoroStartWrapper() {
-    current_coro->entry(current_coro->args);
-    current_coro->state = CORO_DONE;
-    CoroSuspend();
-    __builtin_unreachable();
-}
 
 Coro* CoroAlloc(size_t stack_size) {
     assert(stack_size >= 8 * 1024 && "Stack size too small");
@@ -163,7 +225,7 @@ void CoroInit(Coro* coro, CoroFn entry, void* args) {
 
 void CoroSuspend() {
     assert(current_coro->state != CORO_SUSPENDED && "Suspend called on already suspended coroutine");
-    SwitchCtx(&current_coro->ctx, current_coro->return_ctx);
+    CoroSwitchCtx(&current_coro->ctx, current_coro->return_ctx);
 }
 
 void CoroResume(Coro* coro) {
@@ -179,7 +241,7 @@ void CoroResume(Coro* coro) {
 
     Coro* saved_coro = current_coro;
     current_coro = coro;
-    SwitchCtx(coro->return_ctx, &coro->ctx);
+    CoroSwitchCtx(coro->return_ctx, &coro->ctx);
     current_coro = saved_coro;
 
     current_coro->state = CORO_RUNNING;

@@ -1,5 +1,7 @@
 # Coro - Simple coroutines in Pure C
 
+Many thanks to my coworker for the idea!
+
 This is a simple stb-style library, that implements yet another stackfull coroutines.
 
 Interface is as minimal as possible:

@@ -167,6 +167,7 @@ static void CoroStartWrapper() {
         Ctx* from_var##__LINE__ = (from); \
         Ctx* to_var##__LINE__ = (to); \
         asm volatile ( \
+            "sub $128, %%rsp\n\t" \
             "lea .switch_label_%=(%%rip), %%rax\n\t" \
             "push %%rax\n\t" \
             "push %%rbp\n\t" \
@@ -175,6 +176,7 @@ static void CoroStartWrapper() {
             "pop %%rbp\n\t" \
             "ret\n\t" \
             ".switch_label_%=:" \
+            "add $128, %%rsp\n\t" \
             : "+D"((from_var##__LINE__)), "+S"((to_var##__LINE__)) \
             : \
             : "memory" \

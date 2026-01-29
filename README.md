@@ -36,7 +36,7 @@ Main switch is done with just a few instructions:
 
 You may ask: "But what happens with all the registers after this switch?"
 
-Good question! All other registers are listed as clobbers of ContextSwitch invocation. Compiler manages them and in real function, where switch is happening, only a couple actually needs to be saved across switches.
+Good question! All other registers are listed as clobbers of the above piece of inline-asm-code. Compiler manages them and in real function, where switch is happening, only a couple actually needs to be saved across switches. You can check it out yourself: compile example and objdump it's main.
 
 The undesirable implications of this approach is unknown to humanity. It may break something in unintuitive way.
 
